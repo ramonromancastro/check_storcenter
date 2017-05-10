@@ -13,6 +13,8 @@
 # 20111020      Disk type now doesnt return CRITICAL anymore if disks missing   #
 # 20111031      Using vqeU in mem type (if response comes with kB string)       #
 # 20140120      Added snmp authentication                                       #
+# 20140317      Added temp, fan types (ramonromancastro@gmail.com)              #
+# 20150910      Repair mem, cpu types (ramonromancastro@gmail.com)              #
 #################################################################################
 # Usage:        ./check_storcenter -H host -U user -P password -t type [-w warning] [-c critical]
 #################################################################################
@@ -31,7 +33,9 @@ Types: 		disk -> Checks hard disks for their current status
 		raid -> Checks the RAID status
 		cpu -> Check current CPU load (thresholds possible)
 		mem -> Check current memory (RAM) utilization (thresholds possible)
-		info -> Outputs some general information of the device"
+		info -> Outputs some general information of the device
+		temp -> Check current temperature sensors
+		fan -> Check current fan sensors"
 
 # Nagios exit codes and PATH
 STATE_OK=0              # define the exit code if status is OK
@@ -82,9 +86,9 @@ fi
 case ${type} in
 
 # Disk Check
-disk)   disknames=($(snmpwalk -v 3 -u ${user} ${passinfo} -O vqe ${host} .1.3.6.1.4.1.1139.10.4.3.1.2 | tr ' ' '-'))
+disk)   disknames=($(snmpwalk -v 3 -u ${user} ${passinfo} -O vqe ${host} .1.3.6.1.4.1.11369.10.4.3.1.2 | tr ' ' '-'))
         countdisks=${#disknames[*]}
-        diskstatus=($(snmpwalk -v 3 -u ${user} ${passinfo} -O vqe ${host} .1.3.6.1.4.1.1139.10.4.3.1.4 | tr '"' ' '))
+        diskstatus=($(snmpwalk -v 3 -u ${user} ${passinfo} -O vqe ${host} .1.3.6.1.4.1.11369.10.4.3.1.4 | tr '"' ' '))
         diskstatusok=0
         diskstatusforeign=0
         diskstatusfaulted=0
@@ -108,10 +112,74 @@ disk)   disknames=($(snmpwalk -v 3 -u ${user} ${passinfo} -O vqe ${host} .1.3.6.
         fi
 ;;
 
+# Fan Check
+fan)    fannames=($(snmpwalk -v 3 -u ${user} ${passinfo} -O vqe ${host} .1.3.6.1.4.1.11369.10.6.1.1.2 | tr ' ' '-' | tr '"' ' '))
+        countfans=${#fannames[*]}
+        fanvalue=($(snmpwalk -v 3 -u ${user} ${passinfo} -O vqe ${host} .1.3.6.1.4.1.11369.10.6.1.1.3 | tr '"' ' '))
+        fannumber=0
+        fanwarning=0
+        fancritical=0
+	message=""
+	perf=""
+
+        for value in ${fanvalue[@]}
+        do
+		status="OK"
+		perf="'fan_${fannames[${fannumber}]}'=$value $perf"
+	        if [ -n "${warning}" ] || [ -n "${critical}" ]
+	        then
+	                if [ ${value} -ge ${warning} ] && [ ${value} -lt ${critical} ]; then
+				status="WARNING"
+				let fanwarning++
+	                elif [ ${value} -ge ${warning} ] && [ ${value} -ge ${critical} ]; then
+				status="CRITICAL"
+				let fancritical++
+        	        fi
+		fi
+		message="FAN $status - ${fannames[${fannumber}]}: $value RPM\n$message"
+	        let fannumber++
+        done
+	if [ $fancritical -gt 0 ]; then echo -e "FAN CRITICAL - One or more fans are in critical state\n$message|$perf"; exit ${STATE_CRITICAL}; fi
+	if [ $fanwarning -gt 0 ]; then echo -e "FAN WARNING - One or more fans are in warning state\n$message|$perf"; exit ${STATE_CRITICAL}; fi
+	echo -e "FAN OK - All fans are ok\n$message|$perf"; exit ${STATE_OK}
+;;
+
+# Temp Check
+temp)   tempnames=($(snmpwalk -v 3 -u ${user} ${passinfo} -O vqe ${host} .1.3.6.1.4.1.11369.10.6.2.1.2 | tr ' ' '-' | tr '"' ' '))
+        tempfans=${#fannames[*]}
+        tempvalue=($(snmpwalk -v 3 -u ${user} ${passinfo} -O vqe ${host} .1.3.6.1.4.1.11369.10.6.2.1.3 | tr '"' ' '))
+        tempnumber=0
+        tempwarning=0
+        tempcritical=0
+        message=""
+        perf=""
+
+        for value in ${tempvalue[@]}
+        do
+                status="OK"
+                perf="'temp_${tempnames[${tempnumber}]}'=$value $perf"
+                if [ -n "${warning}" ] || [ -n "${critical}" ]
+                then
+                        if [ ${value} -ge ${warning} ] && [ ${value} -lt ${critical} ]; then
+                                status="WARNING"
+                                let tempwarning++
+                        elif [ ${value} -ge ${warning} ] && [ ${value} -ge ${critical} ]; then
+                                status="CRITICAL"
+                                let tempcritical++
+                        fi
+                fi
+                message="TEMP $status - ${tempnames[${tempnumber}]}: $value ยบC\n$message"
+                let tempnumber++
+        done
+        if [ $tempcritical -gt 0 ]; then echo -e "TEMP CRITICAL - One or more temps are in critical state\n$message|$perf"; exit ${STATE_CRITICAL}; fi
+        if [ $tempwarning -gt 0 ]; then echo -e "TEMP WARNING - One or more temps are in warning state\n$message|$perf"; exit ${STATE_CRITICAL}; fi
+        echo -e "TEMP OK - All temps are ok\n$message|$perf"; exit ${STATE_OK}
+;;
+
 
 # Raid Check
-raid)   raidstatus=$(snmpwalk -v 3 -u ${user} ${passinfo} -O vqe ${host} .1.3.6.1.4.1.1139.10.4.1.0 | tr '"' ' ')
-        raidtype=$(snmpwalk -v 3 -u ${user} ${passinfo} -O vqe ${host} .1.3.6.1.4.1.1139.10.4.2.0)
+raid)   raidstatus=$(snmpwalk -v 3 -u ${user} ${passinfo} -O vqe ${host} .1.3.6.1.4.1.11369.10.4.1.0 | tr '"' ' ')
+        raidtype=$(snmpwalk -v 3 -u ${user} ${passinfo} -O vqe ${host} .1.3.6.1.4.1.11369.10.4.2.0)
 
         if [ $raidstatus = "REBUILDING" ] || [ $raidstatus = "DEGRADED" ] || [ $raidstatus = "REBUILDFS" ]
         then echo "RAID WARNING - RAID $raidstatus"; exit ${STATE_WARNING}
@@ -122,30 +190,40 @@ raid)   raidstatus=$(snmpwalk -v 3 -u ${user} ${passinfo} -O vqe ${host} .1.3.6.
 ;;
 
 
-# CPU Load
-cpu)    load=($(snmpwalk -v 3 -u ${user} ${passinfo} -O vqe ${host} .1.3.6.1.4.1.2021.10.1.3))
-        load1=${load[0]}
-        load1int=$(echo $load1 | awk -F '.' '{print $1}')
-        load5=${load[1]}
-        load15=${load[2]}
+# Temp Check
+cpu)    cpuvalue=($(snmpwalk -v 3 -u ${user} ${passinfo} -O vqe ${host} .1.3.6.1.2.1.25.3.3.1.2 | tr '"' ' '))
+        cpunumber=0
+        cpuwarning=0
+        cpucritical=0
+        message=""
+        perf=""
 
-        if [ -n "${warning}" ] || [ -n "${critical}" ]
-        then
-                if [ ${load1int} -ge ${warning} ] && [ ${load1int} -lt ${critical} ]
-                then echo "CPU LOAD WARNING - Current load is ${load1}|load1=$load1;load5=$load5;load15=$load15"; exit ${STATE_WARNING}
-                elif [ ${load1int} -ge ${warning} ] && [ ${load1int} -ge ${critical} ]
-                then echo "CPU LOAD CRITICAL - Current load is ${load1}|load1=$load1;load5=$load5;load15=$load15"; exit ${STATE_CRITICAL}
-                else echo "CPU LOAD OK - Current load is ${load1}|load1=$load1;load5=$load5;load15=$load15"; exit ${STATE_OK}
+        for value in ${cpuvalue[@]}
+        do
+                status="OK"
+                perf="'cpu_${cpunumber}'=$value% $perf"
+                if [ -n "${warning}" ] || [ -n "${critical}" ]
+                then
+                        if [ ${value} -ge ${warning} ] && [ ${value} -lt ${critical} ]; then
+                                status="WARNING"
+                                let cpuwarning++
+                        elif [ ${value} -ge ${warning} ] && [ ${value} -ge ${critical} ]; then
+                                status="CRITICAL"
+                                let cpucritical++
+                        fi
                 fi
-        else echo "CPU LOAD OK - Current load is ${load1}|load1=$load1;load5=$load5;load15=$load15"; exit ${STATE_OK}
-        fi
+                message="$status - cpu_${cpunumber}: $value%\n$message"
+                let cpunumber++
+        done
+        if [ $cpucritical -gt 0 ]; then echo -e "CPU CRITICAL - One or more cpus are in critical state\n$message|$perf"; exit ${STATE_CRITICAL}; fi
+        if [ $cpuwarning -gt 0 ]; then echo -e "CPU WARNING - One or more cpus are in warning state\n$message|$perf"; exit ${STATE_CRITICAL}; fi
+        echo -e "CPU OK - All cpus are ok\n$message|$perf"; exit ${STATE_OK}
 ;;
 
-
 # Memory (RAM) usage
-mem)    memtotal=$(snmpwalk -v 3 -u ${user} ${passinfo} -O vqeU ${host} .1.3.6.1.4.1.2021.4.5.0)
-        memfree=$(snmpwalk -v 3 -u ${user} ${passinfo} -O vqeU ${host} .1.3.6.1.4.1.2021.4.11.0)
-        memused=$(( $memtotal - $memfree))
+mem)    memtotal=$(snmpwalk -v 3 -u ${user} ${passinfo} -O vqeU ${host} .1.3.6.1.2.1.25.2.3.1.5.1)
+        memused=$(snmpwalk -v 3 -u ${user} ${passinfo} -O vqeU ${host} .1.3.6.1.2.1.25.2.3.1.6.1)
+        memfree=$(( $memtotal - $memused))
         memusedpercent=$(expr $memused \* 100 / $memtotal)
         memtotalperf=$(expr $memtotal \* 1024)
         memfreeperf=$(expr $memfree \* 1024)
@@ -167,12 +245,10 @@ mem)    memtotal=$(snmpwalk -v 3 -u ${user} ${passinfo} -O vqeU ${host} .1.3.6.1
 # General Information
 info)   uptime=$(snmpwalk -v 3 -u ${user} ${passinfo} -O vqt ${host} .1.3.6.1.2.1.25.1.1.0)
         hostname=$(snmpwalk -v 3 -u ${user} ${passinfo} -O vqt ${host} .1.3.6.1.2.1.1.5.0)
-        description=$(snmpwalk -v 3 -u ${user} ${passinfo} -O vqt ${host} .1.3.6.1.4.1.1139.10.1.1.0)
+        description=$(snmpwalk -v 3 -u ${user} ${passinfo} -O vqt ${host} .1.3.6.1.4.1.11369.10.1.1.0)
         uptimed=$(expr $uptime / 100 / 60 / 60 / 24)
 
-        echo "${hostname} (${description}), Uptime: ${uptime} ($uptimed days)"; exit ${STATE_OK}
-
-
+        echo "${hostname} (${description}), Uptime: ${uptime} ($uptimed days)|'uptime'=${uptime}s"; exit ${STATE_OK}
 ;;
 
 esac
